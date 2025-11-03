@@ -1,0 +1,12 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+python-dotenv==1.0.1
+langchain==0.3.13
+langchain-openai==0.2.10
+openai==1.57.2
+langchain-mcp-m2m
+
+# Optional: Only needed for AI agent-based transactions
+# langchain-anthropic
+# langgraph
