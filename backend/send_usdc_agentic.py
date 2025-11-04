@@ -1,6 +1,6 @@
 """
-Test script to send a small USDC transaction using Locus MCP.
-Sends 0.01 USDC from PERSON1 to PERSON2.
+Agentic script to send USDC using Claude AI and Locus MCP.
+Prompts Claude to send 0.93 USDC from PERSON1 to PERSON3 and 0.98 USDC from PERSON1 to PERSON2.
 """
 
 import asyncio
@@ -13,36 +13,38 @@ from langgraph.prebuilt import create_react_agent
 # Load environment variables
 load_dotenv()
 
-async def test_locus_transaction():
-    """Send a test transaction from PERSON1 to PERSON2"""
+async def send_usdc_agentic():
+    """Use Claude AI to send multiple USDC payments"""
 
-    print("🚀 Starting Locus MCP Test Transaction...")
+    print("🤖 Agentic USDC Transfer via Claude AI + Locus MCP")
     print("=" * 60)
 
     # Load credentials from .env
-    locus_client_id = os.getenv("AGENT_CLIENT_ID")
-    locus_client_secret = os.getenv("AGENT_CLIENT_SECRET")
+    locus_client_id = os.getenv("PERSON1_CLIENT_ID")
+    locus_client_secret = os.getenv("PERSON1_CLIENT_SECRET")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
     person1_address = os.getenv("PERSON1_ADDRESS")
     person2_address = os.getenv("PERSON2_ADDRESS")
+    person3_address = os.getenv("PERSON3_ADDRESS")
 
     # Validate credentials
     if not locus_client_id or not locus_client_secret:
-        raise ValueError("AGENT_CLIENT_ID and AGENT_CLIENT_SECRET must be set in .env file")
+        raise ValueError("❌ PERSON1_CLIENT_ID and PERSON1_CLIENT_SECRET must be set in .env file")
 
     if not anthropic_api_key:
-        raise ValueError("ANTHROPIC_API_KEY must be set in .env file. Get one from https://console.anthropic.com/")
+        raise ValueError("❌ ANTHROPIC_API_KEY must be set in .env file")
 
-    if not person1_address or not person2_address:
-        raise ValueError("PERSON1_ADDRESS and PERSON2_ADDRESS must be set in .env file")
+    if not person1_address or not person2_address or not person3_address:
+        raise ValueError("❌ PERSON1_ADDRESS, PERSON2_ADDRESS, and PERSON3_ADDRESS must be set in .env file")
 
     print(f"✅ Loaded credentials")
-    print(f"   From: {person1_address}")
-    print(f"   To: {person2_address}")
+    print(f"   Person 1: {person1_address}")
+    print(f"   Person 2: {person2_address}")
+    print(f"   Person 3: {person3_address}")
     print()
 
-    # 1. Create MCP client with Locus credentials
+    # 1. Create MCP client with Client Credentials
     print("🔌 Connecting to Locus MCP server...")
     client = MCPClientCredentials({
         "locus": {
@@ -55,7 +57,7 @@ async def test_locus_transaction():
         }
     })
 
-    # 2. Initialize connection and load tools
+    # 2. Initialize and load tools
     print("🔧 Initializing connection and loading tools...")
     await client.initialize()
     tools = await client.get_tools()
@@ -73,19 +75,25 @@ async def test_locus_transaction():
         api_key=anthropic_api_key
     )
     agent = create_react_agent(llm, tools)
+    print("✅ Agent ready!")
+    print()
 
-    # 4. Send transaction using natural language
-    print("💸 Sending 0.01 USDC transaction...")
+    # 4. Send transactions using natural language
+    print("💸 Sending USDC payments via AI agent...")
     print()
 
     query = f"""
-    Send 0.01 USDC from {person1_address} to {person2_address}.
-    Please confirm the transaction was successful.
+    Please send two USDC payments:
+    1. Send 0.93 USDC to {person3_address} with memo "Payment to Person 3"
+    2. Send 0.98 USDC to {person2_address} with memo "Payment to Person 2"
+
+    Please confirm both transactions were successful.
     """
 
-    print(f"Agent Query: {query.strip()}")
+    print(f"📝 Agent Query:")
+    print(f"   {query.strip()}")
     print()
-    print("Agent is processing...")
+    print("🔄 Agent is processing...")
     print("-" * 60)
 
     result = await agent.ainvoke({
@@ -95,7 +103,7 @@ async def test_locus_transaction():
     # Print result
     print("-" * 60)
     print()
-    print("📋 Agent Response:")
+    print("🤖 Agent Response:")
     print()
 
     # Extract the final message from the agent
@@ -108,7 +116,7 @@ async def test_locus_transaction():
 
     print()
     print("=" * 60)
-    print("✨ Test complete!")
+    print("✨ Done!")
 
 if __name__ == "__main__":
-    asyncio.run(test_locus_transaction())
+    asyncio.run(send_usdc_agentic())

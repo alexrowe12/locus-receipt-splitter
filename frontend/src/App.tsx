@@ -9,9 +9,9 @@ interface Item {
   assignedTo: string
 }
 
-interface Person {
-  id: string
-  name: string
+interface NegotiationMessage {
+  person: number
+  message: string
 }
 
 interface Transaction {
@@ -26,44 +26,25 @@ interface Transaction {
 }
 
 function App() {
-  // Start with empty state
+  // Receipt upload state
   const [items, setItems] = useState<Item[]>([])
-  const [people, setPeople] = useState<Person[]>([])
-  const [paidBy, setPaidBy] = useState<string>('')
-  const [taxPercent, setTaxPercent] = useState<string>('5')
-  const [tipPercent, setTipPercent] = useState<string>('20')
-  const [newPersonName, setNewPersonName] = useState<string>('')
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [error, setError] = useState<string>('')
-  const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false)
-  const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [showTransactions, setShowTransactions] = useState<boolean>(false)
-
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Calculations
-  const subtotal = items.reduce((sum, item) => sum + item.price, 0)
-  const taxAmount = subtotal * (parseFloat(taxPercent || '0') / 100)
-  const tipAmount = (subtotal + taxAmount) * (parseFloat(tipPercent || '0') / 100)
-  const total = subtotal + taxAmount + tipAmount
+  // Negotiation state
+  const [person1Input, setPerson1Input] = useState<string>('')
+  const [person2Input, setPerson2Input] = useState<string>('')
+  const [person3Input, setPerson3Input] = useState<string>('')
+  const [isNegotiating, setIsNegotiating] = useState<boolean>(false)
+  const [transcript, setTranscript] = useState<NegotiationMessage[]>([])
+  const [finalAmounts, setFinalAmounts] = useState<any>(null)
+  const [total, setTotal] = useState<number>(0)
 
-  // Calculate what each person owes
-  const calculateOwed = () => {
-    const owedMap: { [key: string]: number } = {}
-
-    if (subtotal === 0) return owedMap
-
-    people.forEach(person => {
-      const personItems = items.filter(item => item.assignedTo === person.name)
-      const personSubtotal = personItems.reduce((sum, item) => sum + item.price, 0)
-      const personTaxTipShare = (personSubtotal / subtotal) * (taxAmount + tipAmount)
-      owedMap[person.name] = personSubtotal + personTaxTipShare
-    })
-
-    return owedMap
-  }
-
-  const owedAmounts = calculateOwed()
+  // Payment state
+  const [isExecutingPayment, setIsExecutingPayment] = useState<boolean>(false)
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [showTransactions, setShowTransactions] = useState<boolean>(false)
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -77,11 +58,9 @@ function App() {
     setError('')
 
     try {
-      // Create form data
       const formData = new FormData()
       formData.append('file', file)
 
-      // Send to backend
       const response = await fetch('http://localhost:8000/upload-receipt', {
         method: 'POST',
         body: formData,
@@ -95,9 +74,12 @@ function App() {
       const data = await response.json()
 
       if (data.success && data.items) {
-        console.log('Received items from backend:', data)
-        console.log('Raw CSV response:', data.raw_response)
         setItems(data.items)
+        // Reset negotiation state
+        setTranscript([])
+        setFinalAmounts(null)
+        setTransactions([])
+        setShowTransactions(false)
       } else {
         throw new Error('Invalid response from server')
       }
@@ -107,57 +89,31 @@ function App() {
       console.error('Error uploading receipt:', err)
     } finally {
       setIsLoading(false)
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
     }
   }
 
-  const handleAddPerson = () => {
-    if (newPersonName.trim()) {
-      setPeople([...people, { id: Date.now().toString(), name: newPersonName.trim() }])
-      setNewPersonName('')
-    }
-  }
-
-  const handleRemovePerson = (personId: string) => {
-    const personToRemove = people.find(p => p.id === personId)
-    if (personToRemove) {
-      // Clear assignments for this person
-      setItems(items.map(item =>
-        item.assignedTo === personToRemove.name ? { ...item, assignedTo: '' } : item
-      ))
-      // Remove from people list
-      setPeople(people.filter(p => p.id !== personId))
-      // Clear paidBy if it was this person
-      if (paidBy === personToRemove.name) {
-        setPaidBy('')
-      }
-    }
-  }
-
-  const handleRequest = async () => {
-    setIsProcessingPayment(true)
+  const handleArgue = async () => {
+    setIsNegotiating(true)
     setError('')
+    setTranscript([])
+    setFinalAmounts(null)
     setTransactions([])
     setShowTransactions(false)
 
     const requestData = {
       items,
-      people,
-      paidBy,
-      subtotal,
-      tax: taxAmount,
-      tip: tipAmount,
-      total,
-      owedAmounts,
+      person1_input: person1Input,
+      person2_input: person2Input,
+      person3_input: person3Input,
     }
 
-    console.log('Sending payment request to backend:', requestData)
+    console.log('Starting negotiation with data:', requestData)
 
     try {
-      const response = await fetch('http://localhost:8000/request-payment', {
+      const response = await fetch('http://localhost:8000/negotiate-payment', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -167,12 +123,59 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.detail || 'Failed to process payments')
+        throw new Error(errorData.detail || 'Failed to negotiate payments')
       }
 
       const data = await response.json()
 
-      console.log('Payment response:', data)
+      console.log('Negotiation response:', data)
+
+      if (data.success && data.transcript && data.final_amounts) {
+        setTranscript(data.transcript)
+        setFinalAmounts(data.final_amounts)
+        setTotal(data.total)
+      } else {
+        throw new Error('Invalid response from server')
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to negotiate payments'
+      setError(errorMessage)
+      console.error('Error negotiating payments:', err)
+    } finally {
+      setIsNegotiating(false)
+    }
+  }
+
+  const handleExecutePayment = async () => {
+    setIsExecutingPayment(true)
+    setError('')
+    setTransactions([])
+    setShowTransactions(false)
+
+    const requestData = {
+      person1_amount: finalAmounts.person1,
+      person2_amount: finalAmounts.person2,
+    }
+
+    console.log('Executing payments with data:', requestData)
+
+    try {
+      const response = await fetch('http://localhost:8000/execute-negotiated-payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || 'Failed to execute payments')
+      }
+
+      const data = await response.json()
+
+      console.log('Payment execution response:', data)
 
       if (data.success && data.transactions) {
         setTransactions(data.transactions)
@@ -181,11 +184,11 @@ function App() {
         throw new Error('Invalid response from server')
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to process payments'
+      const errorMessage = err instanceof Error ? err.message : 'Failed to execute payments'
       setError(errorMessage)
-      console.error('Error processing payments:', err)
+      console.error('Error executing payments:', err)
     } finally {
-      setIsProcessingPayment(false)
+      setIsExecutingPayment(false)
     }
   }
 
@@ -201,7 +204,7 @@ function App() {
               isLoading ? 'opacity-50 cursor-not-allowed' : ''
             }`}
           >
-            {isLoading ? 'Processing...' : 'Upload'}
+            {isLoading ? 'Processing...' : 'Upload Receipt'}
           </button>
           <input
             ref={fileInputRef}
@@ -211,7 +214,6 @@ function App() {
             className="hidden"
           />
 
-          {/* Loading Spinner */}
           {isLoading && (
             <div className="mt-4 flex items-center gap-3">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-400"></div>
@@ -219,7 +221,6 @@ function App() {
             </div>
           )}
 
-          {/* Error Message */}
           {error && (
             <div className="mt-4 bg-red-500/20 border border-red-500 text-red-200 px-4 py-3 rounded-lg max-w-md">
               {error}
@@ -227,241 +228,169 @@ function App() {
           )}
         </div>
 
-        {/* People Management */}
-        <div className="bg-[#2d2d2d] rounded-lg p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4">People</h2>
-
-          {/* Add Person */}
-          <div className="flex gap-2 mb-4">
-            <input
-              type="text"
-              value={newPersonName}
-              onChange={(e) => setNewPersonName(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleAddPerson()}
-              placeholder="Add person..."
-              className="flex-1 bg-[#404040] rounded-lg px-4 py-2 text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-teal-400"
-            />
-            <button
-              onClick={handleAddPerson}
-              className="bg-teal-400 text-black font-semibold px-6 py-2 rounded-lg hover:bg-teal-500 transition-colors"
-            >
-              Add
-            </button>
-          </div>
-
-          {/* People List */}
-          {people.length > 0 ? (
-            <div className="space-y-2">
-              {people.map(person => (
-                <div key={person.id} className="flex items-center justify-between bg-[#404040] rounded-lg px-4 py-2">
-                  <span>{person.name}</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setPaidBy(person.name)}
-                      className={`px-3 py-1 rounded text-sm ${
-                        paidBy === person.name
-                          ? 'bg-teal-400 text-black'
-                          : 'bg-[#505050] text-gray-300 hover:bg-[#606060]'
-                      }`}
-                    >
-                      {paidBy === person.name ? 'Paid ✓' : 'Set as Payer'}
-                    </button>
-                    <button
-                      onClick={() => handleRemovePerson(person.id)}
-                      className="text-red-400 hover:text-red-300 px-2 text-xl"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-gray-400 text-center py-4">
-              No people added yet. Add people who shared this receipt.
-            </div>
-          )}
-        </div>
-
-        {/* Items List */}
+        {/* Items Display */}
         {items.length > 0 && (
           <>
-            <div className="space-y-3 mb-6">
-              {items.map(item => (
-                <div
-                  key={item.id}
-                  className="bg-[#404040] rounded-lg px-6 py-4 flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-4 flex-1">
-                    <span className="text-white font-medium">{item.quantity}</span>
-                    <span className="text-white">{item.name}</span>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1">
-                      <span className="text-white">$</span>
-                      <input
-                        type="text"
-                        value={item.price.toFixed(2)}
-                        onChange={(e) => {
-                          const val = e.target.value
-                          // Allow numbers and decimals
-                          if (val === '' || /^\d*\.?\d*$/.test(val)) {
-                            const newPrice = val === '' ? 0 : parseFloat(val)
-                            setItems(items.map(i =>
-                              i.id === item.id ? { ...i, price: newPrice } : i
-                            ))
-                          }
-                        }}
-                        className="bg-[#505050] text-white rounded-lg px-3 py-2 w-24 outline-none focus:ring-2 focus:ring-teal-400 text-right font-medium"
-                      />
+            <div className="bg-[#2d2d2d] rounded-lg p-6 mb-8">
+              <h2 className="text-xl font-semibold mb-4">Receipt Items</h2>
+              <div className="space-y-2">
+                {items.map(item => (
+                  <div
+                    key={item.id}
+                    className="bg-[#404040] rounded-lg px-4 py-3 flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-4">
+                      <span className="text-gray-400">{item.quantity}x</span>
+                      <span className="text-white">{item.name}</span>
                     </div>
-                    <select
-                      value={item.assignedTo}
-                      onChange={(e) => {
-                        setItems(items.map(i =>
-                          i.id === item.id ? { ...i, assignedTo: e.target.value } : i
-                        ))
-                      }}
-                      className={`rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-teal-400 cursor-pointer ${
-                        item.assignedTo === ''
-                          ? 'bg-[#505050] text-gray-400'
-                          : 'bg-[#505050] text-white'
-                      }`}
-                    >
-                      <option value="">Select</option>
-                      {people.map(person => (
-                        <option key={person.id} value={person.name}>
-                          {person.name}
-                        </option>
-                      ))}
-                    </select>
+                    <span className="text-white font-medium">${item.price.toFixed(2)}</span>
                   </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Divider */}
-            <div className="border-t border-gray-600 my-6"></div>
-
-            {/* Subtotal */}
-            <div className="bg-[#404040] rounded-lg px-6 py-4 flex items-center justify-between mb-3">
-              <span className="text-white font-medium">Subtotal:</span>
-              <div className="flex items-center gap-4">
-                <span className="text-white font-medium">${subtotal.toFixed(2)}</span>
-                <select
-                  value={paidBy}
-                  onChange={(e) => setPaidBy(e.target.value)}
-                  className={`rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-teal-400 cursor-pointer ${
-                    paidBy === ''
-                      ? 'bg-[#505050] text-gray-400'
-                      : 'bg-[#505050] text-white'
-                  }`}
-                >
-                  <option value="">Select</option>
-                  {people.map(person => (
-                    <option key={person.id} value={person.name}>
-                      {person.name}
-                    </option>
-                  ))}
-                </select>
+                ))}
               </div>
             </div>
 
-            {/* Tax */}
-            <div className="bg-[#404040] rounded-lg px-6 py-4 flex items-center justify-between mb-3">
-              <span className="text-white font-medium">Tax:</span>
-              <div className="flex items-center gap-4">
-                <span className="text-white font-medium">${taxAmount.toFixed(2)}</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={taxPercent}
-                    onChange={(e) => {
-                      const val = e.target.value
-                      if (val === '' || /^\d*\.?\d*$/.test(val)) {
-                        setTaxPercent(val)
-                      }
-                    }}
-                    className="bg-[#505050] text-white rounded-lg px-4 py-2 w-20 outline-none focus:ring-2 focus:ring-teal-400 text-right"
-                  />
-                  <span className="text-white">%</span>
-                </div>
+            {/* Person Input Boxes */}
+            <div className="space-y-4 mb-8">
+              <div className="bg-[#2d2d2d] rounded-lg p-4">
+                <label className="block text-teal-400 font-semibold mb-2">Person 1</label>
+                <textarea
+                  value={person1Input}
+                  onChange={(e) => setPerson1Input(e.target.value)}
+                  placeholder="Enter your negotiation stance (e.g., 'I'll pay for the americano, but not the cookie...')"
+                  className="w-full bg-[#404040] rounded-lg px-4 py-3 text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-teal-400 min-h-[100px]"
+                />
+              </div>
+
+              <div className="bg-[#2d2d2d] rounded-lg p-4">
+                <label className="block text-teal-400 font-semibold mb-2">Person 2</label>
+                <textarea
+                  value={person2Input}
+                  onChange={(e) => setPerson2Input(e.target.value)}
+                  placeholder="Enter your negotiation stance..."
+                  className="w-full bg-[#404040] rounded-lg px-4 py-3 text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-teal-400 min-h-[100px]"
+                />
+              </div>
+
+              <div className="bg-[#2d2d2d] rounded-lg p-4">
+                <label className="block text-teal-400 font-semibold mb-2">Person 3 (Paid upfront)</label>
+                <textarea
+                  value={person3Input}
+                  onChange={(e) => setPerson3Input(e.target.value)}
+                  placeholder="Enter your negotiation stance..."
+                  className="w-full bg-[#404040] rounded-lg px-4 py-3 text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-teal-400 min-h-[100px]"
+                />
               </div>
             </div>
 
-            {/* Tip */}
-            <div className="bg-[#404040] rounded-lg px-6 py-4 flex items-center justify-between mb-6">
-              <span className="text-white font-medium">Tip:</span>
-              <div className="flex items-center gap-4">
-                <span className="text-white font-medium">${tipAmount.toFixed(2)}</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={tipPercent}
-                    onChange={(e) => {
-                      const val = e.target.value
-                      if (val === '' || /^\d*\.?\d*$/.test(val)) {
-                        setTipPercent(val)
-                      }
-                    }}
-                    className="bg-[#505050] text-white rounded-lg px-4 py-2 w-20 outline-none focus:ring-2 focus:ring-teal-400 text-right"
-                  />
-                  <span className="text-white">%</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Divider */}
-            <div className="border-t border-gray-600 my-6"></div>
-
-            {/* Total */}
-            <div className="px-6 py-2 flex items-center justify-between mb-6">
-              <span className="text-white font-semibold text-xl">Total:</span>
-              <span className="text-white font-semibold text-xl">${total.toFixed(2)}</span>
-            </div>
-
-            {/* Payment Summary */}
-            {paidBy && people.length > 0 && (
-              <div className="space-y-3 mb-8">
-                {people
-                  .filter(person => person.name !== paidBy)
-                  .map(person => (
-                    <div key={person.id} className="px-6 py-2 flex items-center justify-between">
-                      <span className="text-white font-medium">
-                        {person.name} pays {paidBy}:
-                      </span>
-                      <span className="text-white font-semibold text-lg">
-                        ${owedAmounts[person.name]?.toFixed(2) || '0.00'}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            )}
-
-            {/* Request Button */}
-            <div className="flex flex-col items-center gap-4">
+            {/* Argue Button */}
+            <div className="flex flex-col items-center mb-8">
               <button
-                onClick={handleRequest}
-                disabled={isProcessingPayment}
+                onClick={handleArgue}
+                disabled={isNegotiating}
                 className={`bg-teal-400 text-black font-semibold px-12 py-3 rounded-lg hover:bg-teal-500 transition-colors text-lg ${
-                  isProcessingPayment ? 'opacity-50 cursor-not-allowed' : ''
+                  isNegotiating ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
-                {isProcessingPayment ? 'Processing Payments...' : 'Request Payment'}
+                {isNegotiating ? 'Negotiating...' : 'Argue'}
               </button>
 
-              {/* Payment Processing Spinner */}
-              {isProcessingPayment && (
-                <div className="flex items-center gap-3">
+              {isNegotiating && (
+                <div className="mt-4 flex items-center gap-3">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-400"></div>
-                  <span className="text-gray-300">Sending USDC payments via Locus...</span>
+                  <span className="text-gray-300">Agents are negotiating...</span>
                 </div>
               )}
             </div>
 
+            {/* Negotiation Transcript */}
+            {transcript.length > 0 && (
+              <div className="bg-[#2d2d2d] rounded-lg p-6 mb-8">
+                <h2 className="text-2xl font-semibold mb-4 text-teal-400">
+                  💬 Negotiation Transcript
+                </h2>
+                <div className="space-y-4">
+                  {transcript.map((msg, index) => (
+                    <div
+                      key={index}
+                      className="bg-[#404040] rounded-lg p-4 border-l-4 border-teal-400"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-teal-400 font-semibold">
+                          Person {msg.person}
+                        </span>
+                      </div>
+                      <p className="text-gray-200 whitespace-pre-wrap">{msg.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Final Amounts Summary */}
+            {finalAmounts && (
+              <div className="bg-[#2d2d2d] rounded-lg p-6 mb-8">
+                <h2 className="text-2xl font-semibold mb-4 text-teal-400">
+                  💰 Final Payment Summary
+                </h2>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-white font-semibold text-lg">
+                    <span>Total Bill:</span>
+                    <span>${total.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                <div className="mt-6 space-y-3">
+                  <div className="bg-[#404040] rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white font-medium">Person 1 → Person 3:</span>
+                      <span className="text-teal-400 font-semibold text-lg">
+                        ${finalAmounts.person1.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="bg-[#404040] rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white font-medium">Person 2 → Person 3:</span>
+                      <span className="text-teal-400 font-semibold text-lg">
+                        ${finalAmounts.person2.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="bg-[#404040] rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white font-medium">Person 3 (paid upfront):</span>
+                      <span className="text-gray-400 font-semibold text-lg">
+                        Receives ${(finalAmounts.person1 + finalAmounts.person2).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Execute Payment Button */}
+                <div className="flex flex-col items-center mt-6">
+                  <button
+                    onClick={handleExecutePayment}
+                    disabled={isExecutingPayment}
+                    className={`bg-teal-400 text-black font-semibold px-12 py-3 rounded-lg hover:bg-teal-500 transition-colors text-lg ${
+                      isExecutingPayment ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    {isExecutingPayment ? 'Executing Payments...' : 'Execute Payment'}
+                  </button>
+
+                  {isExecutingPayment && (
+                    <div className="mt-4 flex items-center gap-3">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-400"></div>
+                      <span className="text-gray-300">Sending USDC payments via Locus...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Transaction Results */}
             {showTransactions && transactions.length > 0 && (
-              <div className="mt-8 bg-[#2d2d2d] rounded-lg p-6">
+              <div className="bg-[#2d2d2d] rounded-lg p-6">
                 <h2 className="text-2xl font-semibold mb-4 text-teal-400">
                   💸 Payment Results
                 </h2>

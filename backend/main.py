@@ -3,12 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langchain_mcp_m2m import MCPClientCredentials
+from langchain_anthropic import ChatAnthropic
+from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import base64
 import io
 import csv
 import os
+import re
 from typing import List, Dict, Optional
 
 # Load environment variables from .env file
@@ -59,6 +62,16 @@ class PaymentRequest(BaseModel):
     tip: float
     total: float
     owedAmounts: Dict[str, float]
+
+class NegotiationRequest(BaseModel):
+    items: List[Item]
+    person1_input: str
+    person2_input: str
+    person3_input: str
+
+class ExecuteNegotiatedPayment(BaseModel):
+    person1_amount: float
+    person2_amount: float
 
 @app.post("/upload-receipt")
 async def upload_receipt(file: UploadFile = File(...)):
@@ -301,6 +314,404 @@ async def request_payment(payment_data: PaymentRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Error processing payments: {str(e)}"
+        )
+
+@app.post("/negotiate-payment")
+async def negotiate_payment(negotiation_data: NegotiationRequest):
+    """
+    Runs a 3-agent negotiation where each person (represented by a Claude agent)
+    argues about who should pay for what items. Runs 2 full cycles, then asks
+    each agent to commit to a final amount they'll pay to Person 3.
+    """
+    try:
+        # Load agent credentials for all 3 people
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        agent_configs = []
+        for i in range(1, 4):
+            client_id = os.getenv(f"PERSON{i}_CLIENT_ID")
+            client_secret = os.getenv(f"PERSON{i}_CLIENT_SECRET")
+            person_address = os.getenv(f"PERSON{i}_ADDRESS")
+
+            if not client_id or not client_secret:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"PERSON{i}_CLIENT_ID and PERSON{i}_CLIENT_SECRET must be set in .env"
+                )
+
+            agent_configs.append({
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "address": person_address
+            })
+
+        if not anthropic_api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="ANTHROPIC_API_KEY must be set in .env"
+            )
+
+        print("🤖 Starting 3-agent negotiation...")
+
+        # Calculate receipt totals (no tax/tip for now)
+        total = sum(item.price for item in negotiation_data.items)
+
+        # Prepare items description
+        items_text = "\n".join([
+            f"- {item.name} (Quantity: {item.quantity}, Price: ${item.price:.2f})"
+            for item in negotiation_data.items
+        ])
+
+        # Create 3 separate agents, each with their own Locus MCP connection
+        agents = []
+        for i in range(1, 4):
+            print(f"\n🔌 Creating agent for Person {i}...")
+
+            # Create MCP client
+            client = MCPClientCredentials({
+                "locus": {
+                    "url": "https://mcp.paywithlocus.com/mcp",
+                    "transport": "streamable_http",
+                    "auth": {
+                        "client_id": agent_configs[i-1]["client_id"],
+                        "client_secret": agent_configs[i-1]["client_secret"]
+                    }
+                }
+            })
+
+            # Initialize and load tools
+            await client.initialize()
+            tools = await client.get_tools()
+
+            # Create Claude agent with tools
+            llm = ChatAnthropic(
+                model="claude-sonnet-4-20250514",
+                api_key=anthropic_api_key
+            )
+            agent = create_react_agent(llm, tools)
+
+            agents.append({
+                "agent": agent,
+                "person_num": i,
+                "tools": tools
+            })
+
+            print(f"✅ Agent {i} ready with {len(tools)} Locus tools")
+
+        # Run negotiation rounds
+        conversation_history = []
+        user_inputs = [
+            negotiation_data.person1_input,
+            negotiation_data.person2_input,
+            negotiation_data.person3_input
+        ]
+
+        print("\n💬 Starting negotiation rounds...")
+
+        # 2 full cycles = 6 messages total (Person 1, 2, 3, then 1, 2, 3 again)
+        for cycle in range(2):
+            print(f"\n--- Cycle {cycle + 1} ---")
+
+            for person_idx in range(3):
+                person_num = person_idx + 1
+                agent_info = agents[person_idx]
+
+                # Build context for this agent
+                context_parts = [
+                    f"You are representing Person {person_num} in a receipt splitting negotiation.",
+                    f"Person 3 paid the bill upfront, so everyone owes money to Person 3.",
+                    f"\nReceipt items:",
+                    items_text,
+                    f"\nTotal bill: ${total:.2f}",
+                    f"\nYour instructions: {user_inputs[person_idx]}",
+                ]
+
+                # Add conversation history
+                if conversation_history:
+                    context_parts.append("\n--- Previous negotiation messages ---")
+                    for msg in conversation_history:
+                        context_parts.append(f"Person {msg['person']}: {msg['message']}")
+
+                context_parts.append("\nRespond with your argument about who should pay for what. Be specific about items and amounts.")
+
+                full_context = "\n".join(context_parts)
+
+                print(f"\n👤 Person {person_num} is responding...")
+
+                # Invoke agent
+                result = await agent_info["agent"].ainvoke({
+                    "messages": [{"role": "user", "content": full_context}]
+                })
+
+                # Extract response
+                messages = result.get("messages", [])
+                if messages:
+                    response_text = messages[-1].content
+                else:
+                    response_text = str(result)
+
+                print(f"   Response: {response_text[:100]}...")
+
+                # Add to conversation history
+                conversation_history.append({
+                    "person": person_num,
+                    "message": response_text
+                })
+
+        print("\n💰 Asking each agent for their final payment commitment...")
+
+        # 7th round: Ask each agent what they're paying
+        final_amounts = {}
+
+        for person_idx in range(3):
+            person_num = person_idx + 1
+            agent_info = agents[person_idx]
+
+            # Build final summary context
+            summary_parts = [
+                f"You are Person {person_num}.",
+                f"Person 3 paid the bill upfront (${total:.2f} total).",
+                f"\nReceipt items:",
+                items_text,
+                f"\nTotal bill: ${total:.2f}",
+                f"\n--- Full negotiation transcript ---"
+            ]
+
+            for msg in conversation_history:
+                summary_parts.append(f"Person {msg['person']}: {msg['message']}")
+
+            if person_num == 3:
+                summary_parts.append(
+                    f"\n--- Final Commitment ---"
+                    f"\nYou are Person 3 - the person who PAID UPFRONT."
+                    f"\nYou do NOT need to pay anyone. You will RECEIVE money from the others."
+                    f"\n\nBased on the negotiation above, you (Person 3) should respond with: 0"
+                    f"\n\nRespond with ONLY the number: 0"
+                )
+            else:
+                summary_parts.append(
+                    f"\n--- Final Commitment ---"
+                    f"\nYou are Person {person_num}. You need to pay Person 3 (who paid upfront)."
+                    f"\n\nBased on the negotiation above, what is the EXACT dollar amount you will pay to Person 3?"
+                    f"\n\nIMPORTANT REMINDER:"
+                    f"\n- The total bill was only ${total:.2f} (that's {int(total * 100)} cents)"
+                    f"\n- Amounts discussed were things like $0.01, $0.02, $0.03 (1 cent, 2 cents, 3 cents)"
+                    f"\n- Your payment should be in the CENTS range, not whole dollars"
+                    f"\n- DO NOT say 1.00 or 2.00 or 3.00 - those are WAY too large"
+                    f"\n\nLook at your last message in the negotiation. You likely said something like '$0.03' or '$0.02'."
+                    f"\nRespond with ONLY that number in decimal form (e.g., '0.03' or '0.02')."
+                    f"\nDo NOT include the $ symbol. Just the number like: 0.03"
+                )
+
+            full_summary = "\n".join(summary_parts)
+
+            print(f"\n👤 Person {person_num} committing to final amount...")
+
+            # Invoke agent for final amount
+            result = await agent_info["agent"].ainvoke({
+                "messages": [{"role": "user", "content": full_summary}]
+            })
+
+            # Extract response
+            messages = result.get("messages", [])
+            if messages:
+                response_text = messages[-1].content
+            else:
+                response_text = str(result)
+
+            # Try to extract a number from the response
+            # Look for dollar amounts or just numbers
+            amount_match = re.search(r'\$?\s*(\d+\.?\d*)', response_text)
+            if amount_match:
+                amount = float(amount_match.group(1))
+            else:
+                amount = 0.0
+
+            # Sanity check: if amount is way larger than the total bill, it's likely wrong
+            # (e.g., they said "1.00" when they meant "0.01")
+            if amount > total:
+                print(f"   ⚠️  WARNING: Person {person_num} said ${amount:.2f} but total bill is only ${total:.2f}")
+                print(f"   This seems like a decimal place error. Attempting to correct...")
+
+                # Check if they meant cents but said dollars
+                # e.g., if they said "1.00" but likely meant "0.01"
+                corrected_amount = amount / 100
+                if corrected_amount <= total:
+                    print(f"   Corrected to: ${corrected_amount:.2f}")
+                    amount = corrected_amount
+                else:
+                    print(f"   Could not auto-correct. Setting to 0.")
+                    amount = 0.0
+
+            print(f"   Person {person_num} commits: ${amount:.2f}")
+
+            final_amounts[f"person{person_num}"] = amount
+
+            # Add to conversation history
+            if person_num == 3:
+                # Person 3 receives money, doesn't pay
+                total_receiving = final_amounts.get("person1", 0) + final_amounts.get("person2", 0)
+                conversation_history.append({
+                    "person": person_num,
+                    "message": f"I will receive ${total_receiving:.2f} from the others (${final_amounts.get('person1', 0):.2f} from Person 1 and ${final_amounts.get('person2', 0):.2f} from Person 2)."
+                })
+            else:
+                conversation_history.append({
+                    "person": person_num,
+                    "message": f"I will pay ${amount:.2f} to Person 3."
+                })
+
+        print("\n✨ Negotiation complete!")
+
+        return {
+            "success": True,
+            "transcript": conversation_history,
+            "final_amounts": final_amounts,
+            "total": total
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error during negotiation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during negotiation: {str(e)}"
+        )
+
+@app.post("/execute-negotiated-payment")
+async def execute_negotiated_payment(payment_data: ExecuteNegotiatedPayment):
+    """
+    Executes the payments that were negotiated by the agents.
+    Person 1 and Person 2 each send their agreed amounts to Person 3.
+    """
+    try:
+        # Load credentials
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        person3_address = os.getenv("PERSON3_ADDRESS")
+
+        if not person3_address:
+            raise HTTPException(
+                status_code=500,
+                detail="PERSON3_ADDRESS not configured in .env"
+            )
+
+        print("💸 Executing negotiated payments...")
+        print(f"   Person 1 → Person 3: ${payment_data.person1_amount:.2f}")
+        print(f"   Person 2 → Person 3: ${payment_data.person2_amount:.2f}")
+
+        transactions = []
+
+        # Process payments for Person 1 and Person 2
+        for person_num in [1, 2]:
+            amount = payment_data.person1_amount if person_num == 1 else payment_data.person2_amount
+
+            # Skip if amount is 0 or negative
+            if amount <= 0:
+                print(f"   ⏭️  Skipping Person {person_num} (amount: ${amount:.2f})")
+                continue
+
+            client_id = os.getenv(f"PERSON{person_num}_CLIENT_ID")
+            client_secret = os.getenv(f"PERSON{person_num}_CLIENT_SECRET")
+            person_address = os.getenv(f"PERSON{person_num}_ADDRESS")
+
+            if not client_id or not client_secret:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"PERSON{person_num}_CLIENT_ID and PERSON{person_num}_CLIENT_SECRET must be set in .env"
+                )
+
+            print(f"\n🔌 Creating agent for Person {person_num} payment...")
+
+            # Create MCP client for this person
+            client = MCPClientCredentials({
+                "locus": {
+                    "url": "https://mcp.paywithlocus.com/mcp",
+                    "transport": "streamable_http",
+                    "auth": {
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    }
+                }
+            })
+
+            # Initialize and load tools
+            await client.initialize()
+            tools = await client.get_tools()
+
+            # Create Claude agent
+            llm = ChatAnthropic(
+                model="claude-sonnet-4-20250514",
+                api_key=anthropic_api_key
+            )
+            agent = create_react_agent(llm, tools)
+
+            print(f"✅ Agent {person_num} ready, sending payment...")
+
+            # Prompt the agent to send the payment
+            payment_prompt = f"""
+            Send ${amount:.2f} USDC to {person3_address}.
+            Use the memo "Payment from negotiated receipt split".
+            Please confirm the transaction was successful.
+            """
+
+            try:
+                result = await agent.ainvoke({
+                    "messages": [{"role": "user", "content": payment_prompt}]
+                })
+
+                # Extract response
+                messages = result.get("messages", [])
+                if messages:
+                    response_text = messages[-1].content
+                else:
+                    response_text = str(result)
+
+                print(f"   ✅ Transaction successful for Person {person_num}")
+
+                transactions.append({
+                    "from": f"Person {person_num}",
+                    "fromAddress": person_address,
+                    "to": "Person 3",
+                    "toAddress": person3_address,
+                    "amount": amount,
+                    "status": "success",
+                    "result": response_text
+                })
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"   ❌ Transaction failed for Person {person_num}: {error_msg}")
+
+                transactions.append({
+                    "from": f"Person {person_num}",
+                    "fromAddress": person_address,
+                    "to": "Person 3",
+                    "toAddress": person3_address,
+                    "amount": amount,
+                    "status": "failed",
+                    "error": error_msg
+                })
+
+        print("\n✨ Payment execution complete!")
+
+        return {
+            "success": True,
+            "transactions": transactions,
+            "total_processed": len(transactions)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error executing payments: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error executing payments: {str(e)}"
         )
 
 @app.get("/")

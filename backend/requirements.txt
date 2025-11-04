@@ -7,6 +7,6 @@ langchain-openai==0.2.10
 openai==1.57.2
 langchain-mcp-m2m
 
-# Optional: Only needed for AI agent-based transactions
-# langchain-anthropic
-# langgraph
+# Needed for AI agent-based transactions
+langchain-anthropic
+langgraph
