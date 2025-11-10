@@ -1,6 +1,6 @@
 """
 Agentic script to send USDC using Claude AI and Locus MCP.
-Prompts Claude to send 0.93 USDC from PERSON1 to PERSON3 and 0.98 USDC from PERSON1 to PERSON2.
+Prompts Claude to send 4.11 USDC to PERSON1 and 4.14 USDC to PERSON2.
 """
 
 import asyncio
@@ -14,14 +14,14 @@ from langgraph.prebuilt import create_react_agent
 load_dotenv()
 
 async def send_usdc_agentic():
-    """Use Claude AI to send multiple USDC payments"""
+    """Use Claude AI to send multiple USDC payments from Person 3"""
 
     print("🤖 Agentic USDC Transfer via Claude AI + Locus MCP")
     print("=" * 60)
 
-    # Load credentials from .env
-    locus_client_id = os.getenv("PERSON1_CLIENT_ID")
-    locus_client_secret = os.getenv("PERSON1_CLIENT_SECRET")
+    # Load credentials from .env (using Person 3 to send)
+    locus_client_id = os.getenv("PERSON3_CLIENT_ID")
+    locus_client_secret = os.getenv("PERSON3_CLIENT_SECRET")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
     person1_address = os.getenv("PERSON1_ADDRESS")
@@ -30,7 +30,7 @@ async def send_usdc_agentic():
 
     # Validate credentials
     if not locus_client_id or not locus_client_secret:
-        raise ValueError("❌ PERSON1_CLIENT_ID and PERSON1_CLIENT_SECRET must be set in .env file")
+        raise ValueError("❌ PERSON3_CLIENT_ID and PERSON3_CLIENT_SECRET must be set in .env file")
 
     if not anthropic_api_key:
         raise ValueError("❌ ANTHROPIC_API_KEY must be set in .env file")
@@ -39,9 +39,10 @@ async def send_usdc_agentic():
         raise ValueError("❌ PERSON1_ADDRESS, PERSON2_ADDRESS, and PERSON3_ADDRESS must be set in .env file")
 
     print(f"✅ Loaded credentials")
-    print(f"   Person 1: {person1_address}")
-    print(f"   Person 2: {person2_address}")
-    print(f"   Person 3: {person3_address}")
+    print(f"   Sending from: Person 3 ({person3_address})")
+    print(f"   Sending to:")
+    print(f"      Person 1: {person1_address}")
+    print(f"      Person 2: {person2_address}")
     print()
 
     # 1. Create MCP client with Client Credentials
@@ -84,8 +85,8 @@ async def send_usdc_agentic():
 
     query = f"""
     Please send two USDC payments:
-    1. Send 0.93 USDC to {person3_address} with memo "Payment to Person 3"
-    2. Send 0.98 USDC to {person2_address} with memo "Payment to Person 2"
+    1. Send 4.11 USDC to {person1_address} with memo "Payment to Person 1"
+    2. Send 4.14 USDC to {person2_address} with memo "Payment to Person 2"
 
     Please confirm both transactions were successful.
     """

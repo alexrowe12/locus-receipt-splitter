@@ -40,6 +40,7 @@ function App() {
   const [transcript, setTranscript] = useState<NegotiationMessage[]>([])
   const [finalAmounts, setFinalAmounts] = useState<any>(null)
   const [total, setTotal] = useState<number>(0)
+  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set())
 
   // Payment state
   const [isExecutingPayment, setIsExecutingPayment] = useState<boolean>(false)
@@ -48,6 +49,23 @@ function App() {
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
+  }
+
+  const toggleMessageExpansion = (index: number) => {
+    setExpandedMessages(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(index)) {
+        newSet.delete(index)
+      } else {
+        newSet.add(index)
+      }
+      return newSet
+    })
+  }
+
+  const truncateMessage = (message: string, maxLength: number = 150) => {
+    if (message.length <= maxLength) return message
+    return message.substring(0, maxLength) + '...'
   }
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -80,6 +98,7 @@ function App() {
         setFinalAmounts(null)
         setTransactions([])
         setShowTransactions(false)
+        setExpandedMessages(new Set())
       } else {
         throw new Error('Invalid response from server')
       }
@@ -102,6 +121,7 @@ function App() {
     setFinalAmounts(null)
     setTransactions([])
     setShowTransactions(false)
+    setExpandedMessages(new Set())
 
     const requestData = {
       items,
@@ -308,20 +328,36 @@ function App() {
                 <h2 className="text-2xl font-semibold mb-4 text-teal-400">
                   💬 Negotiation Transcript
                 </h2>
-                <div className="space-y-4">
-                  {transcript.map((msg, index) => (
-                    <div
-                      key={index}
-                      className="bg-[#404040] rounded-lg p-4 border-l-4 border-teal-400"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-teal-400 font-semibold">
-                          Person {msg.person}
-                        </span>
+                <div className="space-y-3">
+                  {transcript.map((msg, index) => {
+                    const isExpanded = expandedMessages.has(index)
+                    const isLongMessage = msg.message.length > 150
+                    const displayMessage = isExpanded || !isLongMessage
+                      ? msg.message
+                      : truncateMessage(msg.message)
+
+                    return (
+                      <div
+                        key={index}
+                        className="bg-[#404040] rounded-lg p-4 border-l-4 border-teal-400"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-teal-400 font-semibold">
+                            Person {msg.person}
+                          </span>
+                          {isLongMessage && (
+                            <button
+                              onClick={() => toggleMessageExpansion(index)}
+                              className="text-teal-400 text-sm hover:text-teal-300 transition-colors"
+                            >
+                              {isExpanded ? '▲ Collapse' : '▼ Expand'}
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-gray-200 whitespace-pre-wrap">{displayMessage}</p>
                       </div>
-                      <p className="text-gray-200 whitespace-pre-wrap">{msg.message}</p>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             )}

@@ -9,7 +9,8 @@
       "Bash(npm uninstall:*)",
       "Bash(npm install:*)",
       "Bash(cat:*)",
-      "Bash(python send_usdc.py:*)"
+      "Bash(python send_usdc.py:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []
