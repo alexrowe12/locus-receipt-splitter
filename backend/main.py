@@ -68,6 +68,7 @@ class NegotiationRequest(BaseModel):
     person1_input: str
     person2_input: str
     person3_input: str
+    tip: float = 0.0
 
 class ExecuteNegotiatedPayment(BaseModel):
     person1_amount: float
@@ -101,22 +102,24 @@ async def upload_receipt(file: UploadFile = File(...)):
             content=[
                 {
                     "type": "text",
-                    "text": """Analyze this receipt image and extract all items purchased.
-                    Return the data in CSV format with exactly 3 columns: name,quantity,price
+                    "text": """Analyze this receipt image and extract all items purchased, plus the tip amount.
+                    Return the data in CSV format.
 
                     Rules:
                     - Do NOT include headers in your response
-                    - Each line should be: item_name,quantity,price
+                    - For purchased items, each line should be: item_name,quantity,price
                     - quantity should be a number
                     - price should be the total price for that line item (quantity * unit price) as a decimal number
                     - Do NOT include currency symbols
-                    - Do NOT include the subtotal, tax, or tip lines
+                    - Do NOT include the subtotal or total lines
                     - Only extract the actual purchased items
+                    - At the END, add ONE line with: TIP,1,<tip_amount>
 
                     Example format:
-                    Americano,1,0.01
-                    Chocolate Chip Cookie,2,0.04
-                    Coke,2,0.02
+                    Americano,1,2.00
+                    Chocolate Chip Cookie,2,8.00
+                    Coke,2,4.00
+                    TIP,1,2.00
                     """
                 },
                 {
@@ -134,21 +137,31 @@ async def upload_receipt(file: UploadFile = File(...)):
 
         # Parse CSV response
         items = []
+        tip_amount = 0.0
         csv_reader = csv.reader(io.StringIO(csv_text))
 
         for idx, row in enumerate(csv_reader, start=1):
             if len(row) >= 3:
-                items.append({
-                    "id": str(idx),
-                    "name": row[0].strip(),
-                    "quantity": int(row[1].strip()),
-                    "price": float(row[2].strip()),
-                    "assignedTo": ""  # Empty - user will assign
-                })
+                name = row[0].strip()
+                quantity = int(row[1].strip())
+                price = float(row[2].strip())
+
+                # Check if this is the tip line
+                if name.upper() == "TIP":
+                    tip_amount = price
+                else:
+                    items.append({
+                        "id": str(len(items) + 1),
+                        "name": name,
+                        "quantity": quantity,
+                        "price": price,
+                        "assignedTo": ""  # Empty - user will assign
+                    })
 
         return {
             "success": True,
             "items": items,
+            "tip": tip_amount,
             "raw_response": csv_text  # For debugging
         }
 
@@ -353,50 +366,42 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
 
         print("🤖 Starting 3-agent negotiation...")
 
-        # Calculate receipt totals (no tax/tip for now)
-        total = sum(item.price for item in negotiation_data.items)
+        # Calculate receipt totals
+        items_total = sum(item.price for item in negotiation_data.items)
+        tip = negotiation_data.tip
+        tip_per_person = tip / 3.0
+        total = items_total + tip
+
+        print(f"   Items total: ${items_total:.2f}")
+        print(f"   Tip: ${tip:.2f} (${tip_per_person:.2f} per person)")
+        print(f"   Grand total: ${total:.2f}")
 
         # Prepare items description
         items_text = "\n".join([
             f"- {item.name} (Quantity: {item.quantity}, Price: ${item.price:.2f})"
             for item in negotiation_data.items
         ])
+        items_text += f"\n- Tip: ${tip:.2f} (to be split evenly 3 ways = ${tip_per_person:.2f} per person)"
 
-        # Create 3 separate agents, each with their own Locus MCP connection
+        # Create 3 separate LLMs for negotiation (NO tools during negotiation)
+        # They'll only get tools during payment execution
         agents = []
         for i in range(1, 4):
-            print(f"\n🔌 Creating agent for Person {i}...")
+            print(f"\n🤖 Creating LLM for Person {i}...")
 
-            # Create MCP client
-            client = MCPClientCredentials({
-                "locus": {
-                    "url": "https://mcp.paywithlocus.com/mcp",
-                    "transport": "streamable_http",
-                    "auth": {
-                        "client_id": agent_configs[i-1]["client_id"],
-                        "client_secret": agent_configs[i-1]["client_secret"]
-                    }
-                }
-            })
-
-            # Initialize and load tools
-            await client.initialize()
-            tools = await client.get_tools()
-
-            # Create Claude agent with tools
+            # Create Claude LLM WITHOUT tools for negotiation
             llm = ChatAnthropic(
                 model="claude-sonnet-4-20250514",
-                api_key=anthropic_api_key
+                api_key=anthropic_api_key,
+                temperature=0.7
             )
-            agent = create_react_agent(llm, tools)
 
             agents.append({
-                "agent": agent,
-                "person_num": i,
-                "tools": tools
+                "llm": llm,
+                "person_num": i
             })
 
-            print(f"✅ Agent {i} ready with {len(tools)} Locus tools")
+            print(f"✅ Agent {i} ready for negotiation")
 
         # Run negotiation rounds
         conversation_history = []
@@ -408,8 +413,9 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
 
         print("\n💬 Starting negotiation rounds...")
 
-        # 2 full cycles = 6 messages total (Person 1, 2, 3, then 1, 2, 3 again)
-        for cycle in range(2):
+        # 1 full cycle = 3 messages total (Person 1, 2, 3)
+        # This should be enough with clear user instructions
+        for cycle in range(1):
             print(f"\n--- Cycle {cycle + 1} ---")
 
             for person_idx in range(3):
@@ -422,8 +428,17 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
                     f"Person 3 paid the bill upfront, so everyone owes money to Person 3.",
                     f"\nReceipt items:",
                     items_text,
-                    f"\nTotal bill: ${total:.2f}",
-                    f"\nYour instructions: {user_inputs[person_idx]}",
+                    f"\nItems total: ${items_total:.2f}",
+                    f"\nTip: ${tip:.2f} (will be split evenly 3 ways, so each person adds ${tip_per_person:.2f} to their share)",
+                    f"\nGrand total: ${total:.2f}",
+                    f"\n**Your personal stance (what YOU told us):**",
+                    f"{user_inputs[person_idx]}",
+                    f"\n**IMPORTANT RULES:**",
+                    f"1. DO NOT check your wallet balance or use any Locus tools during negotiation",
+                    f"2. This is a theoretical negotiation about WHO SHOULD pay for WHAT items",
+                    f"3. Base your argument ONLY on what you stated in your personal stance above",
+                    f"4. Be reasonable and work towards a fair split",
+                    f"5. Remember the tip (${tip_per_person:.2f}) will be added to everyone's final amount",
                 ]
 
                 # Add conversation history
@@ -432,23 +447,18 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
                     for msg in conversation_history:
                         context_parts.append(f"Person {msg['person']}: {msg['message']}")
 
-                context_parts.append("\nRespond with your argument about who should pay for what. Be specific about items and amounts.")
+                context_parts.append("\nRespond with your argument about who should pay for what items. Be specific about items and dollar amounts. Focus on reaching a fair agreement.")
 
                 full_context = "\n".join(context_parts)
 
                 print(f"\n👤 Person {person_num} is responding...")
 
-                # Invoke agent
-                result = await agent_info["agent"].ainvoke({
-                    "messages": [{"role": "user", "content": full_context}]
-                })
+                # Invoke LLM directly (no tools)
+                from langchain_core.messages import HumanMessage as LCHumanMessage
+                result = await agent_info["llm"].ainvoke([LCHumanMessage(content=full_context)])
 
                 # Extract response
-                messages = result.get("messages", [])
-                if messages:
-                    response_text = messages[-1].content
-                else:
-                    response_text = str(result)
+                response_text = result.content
 
                 print(f"   Response: {response_text[:100]}...")
 
@@ -473,7 +483,9 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
                 f"Person 3 paid the bill upfront (${total:.2f} total).",
                 f"\nReceipt items:",
                 items_text,
-                f"\nTotal bill: ${total:.2f}",
+                f"\nItems total: ${items_total:.2f}",
+                f"\nTip: ${tip:.2f} (split evenly 3 ways = ${tip_per_person:.2f} per person)",
+                f"\nGrand total: ${total:.2f}",
                 f"\n--- Full negotiation transcript ---"
             ]
 
@@ -492,32 +504,31 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
                 summary_parts.append(
                     f"\n--- Final Commitment ---"
                     f"\nYou are Person {person_num}. You need to pay Person 3 (who paid upfront)."
-                    f"\n\nBased on the negotiation above, what is the EXACT dollar amount you will pay to Person 3?"
-                    f"\n\nIMPORTANT REMINDER:"
-                    f"\n- The total bill was only ${total:.2f} (that's {int(total * 100)} cents)"
-                    f"\n- Amounts discussed were things like $0.01, $0.02, $0.03 (1 cent, 2 cents, 3 cents)"
-                    f"\n- Your payment should be in the CENTS range, not whole dollars"
-                    f"\n- DO NOT say 1.00 or 2.00 or 3.00 - those are WAY too large"
-                    f"\n\nLook at your last message in the negotiation. You likely said something like '$0.03' or '$0.02'."
-                    f"\nRespond with ONLY that number in decimal form (e.g., '0.03' or '0.02')."
-                    f"\nDo NOT include the $ symbol. Just the number like: 0.03"
+                    f"\n\nBased on the negotiation above, calculate the EXACT dollar amount you will pay to Person 3."
+                    f"\n\nSTEP BY STEP:"
+                    f"\n1. Add up the price of all items you agreed to pay for"
+                    f"\n2. Add your share of the tip: ${tip_per_person:.2f}"
+                    f"\n3. That's your total payment"
+                    f"\n\nExample calculation:"
+                    f"\n- If you're paying for items totaling $6.00"
+                    f"\n- Plus tip share: $6.00 + ${tip_per_person:.2f} = ${6.00 + tip_per_person:.2f}"
+                    f"\n\nDO NOT check your wallet balance. DO NOT use any tools."
+                    f"\nJust calculate based on what you negotiated above."
+                    f"\n\nRespond with ONLY the final number (e.g., '6.67')."
+                    f"\nNo $ symbol. No explanation. Just the number."
                 )
 
             full_summary = "\n".join(summary_parts)
 
             print(f"\n👤 Person {person_num} committing to final amount...")
 
-            # Invoke agent for final amount
-            result = await agent_info["agent"].ainvoke({
-                "messages": [{"role": "user", "content": full_summary}]
-            })
+            # Invoke LLM for final amount
+            from langchain_core.messages import HumanMessage as LCHumanMessage
+            result = await agent_info["llm"].ainvoke([LCHumanMessage(content=full_summary)])
 
             # Extract response
-            messages = result.get("messages", [])
-            if messages:
-                response_text = messages[-1].content
-            else:
-                response_text = str(result)
+            response_text = result.content
+            print(f"   Raw response: {response_text}")
 
             # Try to extract a number from the response
             # Look for dollar amounts or just numbers
@@ -527,21 +538,11 @@ async def negotiate_payment(negotiation_data: NegotiationRequest):
             else:
                 amount = 0.0
 
-            # Sanity check: if amount is way larger than the total bill, it's likely wrong
-            # (e.g., they said "1.00" when they meant "0.01")
-            if amount > total:
-                print(f"   ⚠️  WARNING: Person {person_num} said ${amount:.2f} but total bill is only ${total:.2f}")
-                print(f"   This seems like a decimal place error. Attempting to correct...")
-
-                # Check if they meant cents but said dollars
-                # e.g., if they said "1.00" but likely meant "0.01"
-                corrected_amount = amount / 100
-                if corrected_amount <= total:
-                    print(f"   Corrected to: ${corrected_amount:.2f}")
-                    amount = corrected_amount
-                else:
-                    print(f"   Could not auto-correct. Setting to 0.")
-                    amount = 0.0
+            # Basic sanity check
+            if amount > total * 2:
+                print(f"   ⚠️  WARNING: Person {person_num} said ${amount:.2f} which seems too high (total bill: ${total:.2f})")
+                print(f"   Setting to 0. Please check the negotiation.")
+                amount = 0.0
 
             print(f"   Person {person_num} commits: ${amount:.2f}")
 

@@ -28,6 +28,7 @@ interface Transaction {
 function App() {
   // Receipt upload state
   const [items, setItems] = useState<Item[]>([])
+  const [tip, setTip] = useState<number>(0)
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [error, setError] = useState<string>('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -68,6 +69,15 @@ function App() {
     return message.substring(0, maxLength) + '...'
   }
 
+  const getPersonName = (personNumber: number): string => {
+    switch (personNumber) {
+      case 1: return 'Cole'
+      case 2: return 'Eliot'
+      case 3: return 'Alex'
+      default: return `Person ${personNumber}`
+    }
+  }
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -93,6 +103,7 @@ function App() {
 
       if (data.success && data.items) {
         setItems(data.items)
+        setTip(data.tip || 0)
         // Reset negotiation state
         setTranscript([])
         setFinalAmounts(null)
@@ -128,6 +139,7 @@ function App() {
       person1_input: person1Input,
       person2_input: person2Input,
       person3_input: person3Input,
+      tip: tip,
     }
 
     console.log('Starting negotiation with data:', requestData)
@@ -267,12 +279,20 @@ function App() {
                   </div>
                 ))}
               </div>
+              {tip > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-600">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Tip (split 3 ways):</span>
+                    <span className="text-teal-400 font-semibold">${tip.toFixed(2)} (${(tip / 3).toFixed(2)} per person)</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Person Input Boxes */}
             <div className="space-y-4 mb-8">
               <div className="bg-[#2d2d2d] rounded-lg p-4">
-                <label className="block text-teal-400 font-semibold mb-2">Person 1</label>
+                <label className="block text-teal-400 font-semibold mb-2">Cole</label>
                 <textarea
                   value={person1Input}
                   onChange={(e) => setPerson1Input(e.target.value)}
@@ -282,7 +302,7 @@ function App() {
               </div>
 
               <div className="bg-[#2d2d2d] rounded-lg p-4">
-                <label className="block text-teal-400 font-semibold mb-2">Person 2</label>
+                <label className="block text-teal-400 font-semibold mb-2">Eliot</label>
                 <textarea
                   value={person2Input}
                   onChange={(e) => setPerson2Input(e.target.value)}
@@ -292,7 +312,7 @@ function App() {
               </div>
 
               <div className="bg-[#2d2d2d] rounded-lg p-4">
-                <label className="block text-teal-400 font-semibold mb-2">Person 3 (Paid upfront)</label>
+                <label className="block text-teal-400 font-semibold mb-2">Alex (Paid upfront)</label>
                 <textarea
                   value={person3Input}
                   onChange={(e) => setPerson3Input(e.target.value)}
@@ -343,7 +363,7 @@ function App() {
                       >
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-teal-400 font-semibold">
-                            Person {msg.person}
+                            {getPersonName(msg.person)}
                           </span>
                           {isLongMessage && (
                             <button
@@ -378,7 +398,7 @@ function App() {
                 <div className="mt-6 space-y-3">
                   <div className="bg-[#404040] rounded-lg p-4">
                     <div className="flex justify-between items-center">
-                      <span className="text-white font-medium">Person 1 → Person 3:</span>
+                      <span className="text-white font-medium">Cole → Alex:</span>
                       <span className="text-teal-400 font-semibold text-lg">
                         ${finalAmounts.person1.toFixed(2)}
                       </span>
@@ -386,7 +406,7 @@ function App() {
                   </div>
                   <div className="bg-[#404040] rounded-lg p-4">
                     <div className="flex justify-between items-center">
-                      <span className="text-white font-medium">Person 2 → Person 3:</span>
+                      <span className="text-white font-medium">Eliot → Alex:</span>
                       <span className="text-teal-400 font-semibold text-lg">
                         ${finalAmounts.person2.toFixed(2)}
                       </span>
@@ -394,7 +414,7 @@ function App() {
                   </div>
                   <div className="bg-[#404040] rounded-lg p-4">
                     <div className="flex justify-between items-center">
-                      <span className="text-white font-medium">Person 3 (paid upfront):</span>
+                      <span className="text-white font-medium">Alex (paid upfront):</span>
                       <span className="text-gray-400 font-semibold text-lg">
                         Receives ${(finalAmounts.person1 + finalAmounts.person2).toFixed(2)}
                       </span>
